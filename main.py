@@ -3,6 +3,10 @@ import pandas as pd
 import requests
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Set Matplotlib style
+sns.set_theme()
 
 # Helper function to fetch live prices
 def fetch_price(asset_name, asset_type):
@@ -59,7 +63,7 @@ class PortfolioTool:
 
                 # Fetch live price
                 current_price = fetch_price(asset, asset_type)
-                if current_price is None:
+                if current_price is None or np.isnan(current_price):
                     current_price = 0  # Fallback if API fails
 
                 # Calculate unrealized P/L
@@ -83,16 +87,26 @@ class PortfolioTool:
         st.write("## Portfolio Overview")
         if self.portfolio.empty:
             st.info("No assets in the portfolio. Add transactions to see your portfolio.")
+            return
         else:
             st.dataframe(self.portfolio)
             total_value = self.portfolio["Value"].sum()
             st.write(f"### Total Portfolio Value: ${total_value:.2f}")
 
-            # Pie chart for allocation
-            fig, ax = plt.subplots()
-            ax.pie(self.portfolio["Value"], labels=self.portfolio["Asset"], autopct="%1.1f%%", startangle=140)
-            ax.set_title("Portfolio Allocation")
-            st.pyplot(fig)
+            # Check for valid data in the pie chart
+            if self.portfolio["Value"].sum() > 0:
+                labels = [str(label) if label else "Unknown" for label in self.portfolio["Asset"]]
+                fig, ax = plt.subplots()
+                ax.pie(
+                    self.portfolio["Value"],
+                    labels=labels,
+                    autopct="%1.1f%%",
+                    startangle=140
+                )
+                ax.set_title("Portfolio Allocation")
+                st.pyplot(fig)
+            else:
+                st.warning("Portfolio values are zero. Add transactions to see asset allocation.")
 
 # Streamlit Interface
 def main():
