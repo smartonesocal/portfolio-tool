@@ -1,142 +1,130 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import requests
-import matplotlib.pyplot as plt
+from datetime import datetime
+import openai  # For news summarization
 
-# API Helpers
-def fetch_crypto_price(crypto_name):
-    """Fetch live price for cryptocurrencies using CoinGecko API."""
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto_name.lower()}&vs_currencies=usd"
+# --- API Keys ---
+NEWSAPI_KEY = "YOUR_NEWSAPI_KEY"  # Get from https://newsapi.org
+OPENAI_API_KEY = "YOUR_OPENAI_API_KEY"  # Get from https://openai.com
+
+# Set up OpenAI API key
+openai.api_key = OPENAI_API_KEY
+
+# Helper functions
+def fetch_stock_news(symbol):
+    """Fetch stock-related news using NewsAPI."""
+    url = f"https://newsapi.org/v2/everything?q={symbol}&apiKey={NEWSAPI_KEY}"
     response = requests.get(url)
     if response.status_code == 200:
-        data = response.json()
-        return data.get(crypto_name.lower(), {}).get("usd", None)
+        articles = response.json()["articles"]
+        return articles
     else:
-        return None
+        st.error(f"Failed to fetch news for {symbol}. Check API Key or symbol.")
+        return []
 
-def fetch_stock_price(stock_ticker):
-    """Fetch live price for stocks using Alpha Vantage API."""
-    api_key = "YOUR_ALPHA_VANTAGE_API_KEY"  # Replace with your Alpha Vantage API Key
-    url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={stock_ticker}&apikey={api_key}"
+def fetch_crypto_news(crypto_name):
+    """Fetch crypto-related news using CoinGecko."""
+    url = f"https://api.coingecko.com/api/v3/search/trending"
     response = requests.get(url)
     if response.status_code == 200:
-        data = response.json()
-        if "Global Quote" in data:
-            return float(data["Global Quote"]["05. price"])
-    return None
+        data = response.json()["coins"]
+        return [
+            {
+                "title": coin["item"]["name"],
+                "url": f"https://www.coingecko.com/en/coins/{coin['item']['id']}",
+                "date": datetime.now().strftime("%Y-%m-%d"),
+            }
+            for coin in data
+        ]
+    else:
+        st.error(f"Failed to fetch crypto news. Check API.")
+        return []
 
-# Portfolio Class
-class Portfolio:
-    def __init__(self):
-        self.transactions = pd.DataFrame(columns=["Asset", "Type", "Action", "Quantity", "Price", "Date"])
-        self.portfolio = pd.DataFrame(columns=["Asset", "Type", "Average Price", "Current Price", "Quantity", "Value", "Unrealized P/L"])
+def summarize_news(text):
+    """Summarize news using OpenAI GPT."""
+    try:
+        response = openai.Completion.create(
+            engine="text-davinci-003",
+            prompt=f"Summarize the following news article in a concise and actionable way:\n\n{text}",
+            max_tokens=100,
+        )
+        return response["choices"][0]["text"].strip()
+    except Exception as e:
+        st.error(f"OpenAI summarization failed: {e}")
+        return "Unable to summarize this news article."
 
-    def add_transaction(self, asset, asset_type, action, quantity, price, date):
-        """Add a buy/sell transaction."""
-        new_transaction = pd.DataFrame({
-            "Asset": [asset],
-            "Type": [asset_type],
-            "Action": [action],
-            "Quantity": [quantity if action == "Buy" else -quantity],
-            "Price": [price],
-            "Date": [date]
-        })
-        self.transactions = pd.concat([self.transactions, new_transaction], ignore_index=True)
-        self.update_portfolio()
+def analyze_sentiment(text):
+    """Perform sentiment analysis on the news article using OpenAI."""
+    try:
+        response = openai.Completion.create(
+            engine="text-davinci-003",
+            prompt=f"Analyze the sentiment of the following text as Positive, Negative, or Neutral:\n\n{text}",
+            max_tokens=10,
+        )
+        return response["choices"][0]["text"].strip()
+    except Exception as e:
+        st.error(f"Sentiment analysis failed: {e}")
+        return "Unknown"
 
-    def update_portfolio(self):
-        """Update portfolio based on transactions."""
-        portfolio_data = []
-        for asset in self.transactions["Asset"].unique():
-            asset_transactions = self.transactions[self.transactions["Asset"] == asset]
-            total_quantity = asset_transactions["Quantity"].sum()
-
-            if total_quantity > 0:
-                # Calculate average price
-                total_cost = (asset_transactions[asset_transactions["Quantity"] > 0]["Quantity"] * asset_transactions["Price"]).sum()
-                avg_price = total_cost / total_quantity
-
-                # Fetch live price
-                asset_type = asset_transactions["Type"].iloc[0]
-                if asset_type == "Crypto":
-                    current_price = fetch_crypto_price(asset)
-                elif asset_type == "Stock":
-                    current_price = fetch_stock_price(asset)
-                else:
-                    current_price = None
-
-                if current_price is None:
-                    current_price = 0
-
-                # Calculate values
-                current_value = total_quantity * current_price
-                unrealized_pl = current_value - (total_quantity * avg_price)
-
-                portfolio_data.append({
-                    "Asset": asset,
-                    "Type": asset_type,
-                    "Average Price": avg_price,
-                    "Current Price": current_price,
-                    "Quantity": total_quantity,
-                    "Value": current_value,
-                    "Unrealized P/L": unrealized_pl
-                })
-
-        self.portfolio = pd.DataFrame(portfolio_data)
-
-    def display_portfolio(self):
-        """Display portfolio overview and allocation."""
-        st.write("### Portfolio Overview")
-        if self.portfolio.empty:
-            st.info("No assets in the portfolio. Add transactions to see the portfolio.")
-        else:
-            st.dataframe(self.portfolio)
-            total_value = self.portfolio["Value"].sum()
-            st.write(f"**Total Portfolio Value:** ${total_value:,.2f}")
-
-            # Allocation pie chart
-            fig, ax = plt.subplots()
-            ax.pie(self.portfolio["Value"], labels=self.portfolio["Asset"], autopct="%1.1f%%", startangle=140)
-            ax.set_title("Portfolio Allocation")
-            st.pyplot(fig)
-
-    def display_transactions(self):
-        """Display transaction history."""
-        st.write("### Transaction History")
-        if self.transactions.empty:
-            st.info("No transactions recorded.")
-        else:
-            st.dataframe(self.transactions)
-
-# Streamlit Interface
+# Streamlit App
 def main():
-    st.title("Stocks & Crypto Portfolio Analysis Tool")
-    st.sidebar.title("Add Transaction")
+    st.title("Stocks & Crypto News Aggregator")
+    st.sidebar.title("Watchlist Manager")
 
-    # Initialize Portfolio
-    if "portfolio" not in st.session_state:
-        st.session_state["portfolio"] = Portfolio()
-    portfolio = st.session_state["portfolio"]
+    # --- Watchlist Management ---
+    if "watchlist" not in st.session_state:
+        st.session_state["watchlist"] = []
 
-    # Sidebar Inputs
-    asset = st.sidebar.text_input("Asset (e.g., BTC, AAPL)")
-    asset_type = st.sidebar.selectbox("Type", ["Crypto", "Stock"])
-    action = st.sidebar.selectbox("Action", ["Buy", "Sell"])
-    quantity = st.sidebar.number_input("Quantity", min_value=0.0, step=0.1)
-    price = st.sidebar.number_input("Price ($)", min_value=0.0, step=0.01)
-    date = st.sidebar.date_input("Date")
+    st.sidebar.header("Add to Watchlist")
+    asset_name = st.sidebar.text_input("Asset Name (e.g., AAPL, BTC)")
+    asset_type = st.sidebar.selectbox("Asset Type", ["Stock", "Crypto"])
+    if st.sidebar.button("Add Asset"):
+        st.session_state["watchlist"].append({"name": asset_name, "type": asset_type})
+        st.sidebar.success(f"Added {asset_name} to the watchlist.")
 
-    if st.sidebar.button("Add Transaction"):
-        portfolio.add_transaction(asset, asset_type, action, quantity, price, date)
-        st.sidebar.success(f"Transaction for {asset} added successfully!")
+    # Display current watchlist
+    st.sidebar.subheader("Your Watchlist")
+    if st.session_state["watchlist"]:
+        for asset in st.session_state["watchlist"]:
+            st.sidebar.write(f"- {asset['name']} ({asset['type']})")
+    else:
+        st.sidebar.info("Your watchlist is empty.")
 
-    # Main Section
-    portfolio.display_portfolio()
-    portfolio.display_transactions()
+    # --- News Aggregation ---
+    st.header("Aggregated News Feed")
+    if st.session_state["watchlist"]:
+        for asset in st.session_state["watchlist"]:
+            st.subheader(f"News for {asset['name']} ({asset['type']})")
+
+            # Fetch news based on asset type
+            if asset["type"] == "Stock":
+                news_articles = fetch_stock_news(asset["name"])
+            elif asset["type"] == "Crypto":
+                news_articles = fetch_crypto_news(asset["name"])
+            else:
+                news_articles = []
+
+            # Display news articles
+            if news_articles:
+                for article in news_articles:
+                    st.markdown(f"**Title:** {article['title']}")
+                    st.markdown(f"**URL:** [Read more]({article['url']})")
+                    st.markdown(f"**Date:** {article['date']}")
+
+                    # Summarize news
+                    summary = summarize_news(article["title"])
+                    st.write(f"**Summary:** {summary}")
+
+                    # Sentiment Analysis
+                    sentiment = analyze_sentiment(article["title"])
+                    st.write(f"**Sentiment:** {sentiment}")
+                    st.write("---")
+            else:
+                st.write(f"No news available for {asset['name']}.")
+
+    else:
+        st.info("Add assets to your watchlist to see news.")
 
 if __name__ == "__main__":
     main()
-
-            
-               
