@@ -1,6 +1,5 @@
 streamlit
 pandas
-matplotlib
-seaborn
-requests
 numpy
+matplotlib
+requests
