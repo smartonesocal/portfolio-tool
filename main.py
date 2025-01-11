@@ -1,121 +1,129 @@
 import streamlit as st
 import pandas as pd
+import requests
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Helper functions for portfolio metrics
-def calculate_cagr(start_value, end_value, years):
-    """Calculate Compound Annual Growth Rate (CAGR)."""
-    return ((end_value / start_value) ** (1 / years) - 1) * 100
+# Helper function to fetch live prices
+def fetch_price(asset_name, asset_type):
+    """Fetch live price for a stock or cryptocurrency."""
+    if asset_type == "Crypto":
+        # Using CoinGecko API for crypto prices
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={asset_name.lower()}&vs_currencies=usd"
+        response = requests.get(url)
+        data = response.json()
+        return data.get(asset_name.lower(), {}).get("usd", None)
+    elif asset_type == "Stock":
+        # Replace 'YOUR_ALPHA_VANTAGE_API_KEY' with a valid key
+        api_key = "YOUR_ALPHA_VANTAGE_API_KEY"
+        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={asset_name}&apikey={api_key}"
+        response = requests.get(url)
+        data = response.json()
+        return float(data["Global Quote"]["05. price"]) if "Global Quote" in data else None
+    return None
 
-def calculate_sharpe_ratio(portfolio_returns, risk_free_rate, std_dev):
-    """Calculate Sharpe Ratio."""
-    return (np.mean(portfolio_returns) - risk_free_rate) / std_dev
-
-def calculate_portfolio_volatility(weights, covariance_matrix):
-    """Calculate portfolio volatility."""
-    return np.sqrt(np.dot(weights.T, np.dot(covariance_matrix, weights)))
-
-# Main Portfolio Tool class
-class PortfolioAnalysisTool:
+# Portfolio Tool Class
+class PortfolioTool:
     def __init__(self):
-        self.portfolio = pd.DataFrame(columns=["Name", "Type", "Value", "Allocation (%)", "Return (%)", "Volatility (%)"])
-        self.benchmark = None
+        self.transactions = pd.DataFrame(columns=["Asset", "Type", "Date", "Action", "Quantity", "Price"])
+        self.portfolio = pd.DataFrame(columns=["Asset", "Type", "Average Price", "Current Price", "Quantity", "Value", "Unrealized P/L"])
 
-    def add_asset(self, name, asset_type, value, allocation_percentage, expected_return, volatility):
-        """Add an asset to the portfolio."""
-        new_asset = pd.DataFrame({
-            "Name": [name],
+    def add_transaction(self, asset_name, asset_type, date, action, quantity, price):
+        """Add a buy/sell transaction for an asset."""
+        new_transaction = pd.DataFrame({
+            "Asset": [asset_name],
             "Type": [asset_type],
-            "Value": [value],
-            "Allocation (%)": [allocation_percentage],
-            "Return (%)": [expected_return],
-            "Volatility (%)": [volatility]
+            "Date": [date],
+            "Action": [action],
+            "Quantity": [quantity if action == "Buy" else -quantity],
+            "Price": [price]
         })
-        self.portfolio = pd.concat([self.portfolio, new_asset], ignore_index=True)
+        self.transactions = pd.concat([self.transactions, new_transaction], ignore_index=True)
+        self.update_portfolio()
 
-    def view_portfolio(self):
-        """Display the portfolio."""
+    def update_portfolio(self):
+        """Update portfolio data based on transactions."""
+        if self.transactions.empty:
+            return
+
+        portfolio_summary = []
+        for asset in self.transactions["Asset"].unique():
+            asset_data = self.transactions[self.transactions["Asset"] == asset]
+            asset_type = asset_data["Type"].iloc[0]
+            total_quantity = asset_data["Quantity"].sum()
+
+            if total_quantity > 0:
+                # Calculate average price
+                total_cost = (asset_data[asset_data["Quantity"] > 0]["Quantity"] * asset_data[asset_data["Quantity"] > 0]["Price"]).sum()
+                average_price = total_cost / total_quantity
+
+                # Fetch live price
+                current_price = fetch_price(asset, asset_type)
+                if current_price is None:
+                    current_price = 0  # Fallback if API fails
+
+                # Calculate unrealized P/L
+                value = total_quantity * current_price
+                unrealized_pl = value - (total_quantity * average_price)
+
+                portfolio_summary.append({
+                    "Asset": asset,
+                    "Type": asset_type,
+                    "Average Price": average_price,
+                    "Current Price": current_price,
+                    "Quantity": total_quantity,
+                    "Value": value,
+                    "Unrealized P/L": unrealized_pl
+                })
+
+        self.portfolio = pd.DataFrame(portfolio_summary)
+
+    def display_portfolio(self):
+        """Display portfolio summary."""
         st.write("## Portfolio Overview")
-        st.dataframe(self.portfolio)
-        total_value = self.portfolio["Value"].sum()
-        st.write(f"### Total Portfolio Value: ${total_value:.2f}")
-
-    def plot_allocation_pie_chart(self):
-        """Plot asset allocation pie chart."""
         if self.portfolio.empty:
-            st.warning("No assets in portfolio to display a pie chart.")
-            return
-        fig, ax = plt.subplots()
-        ax.pie(
-            self.portfolio["Allocation (%)"],
-            labels=self.portfolio["Name"],
-            autopct="%1.1f%%",
-            startangle=140
-        )
-        ax.set_title("Portfolio Allocation")
-        st.pyplot(fig)
-
-    def calculate_portfolio_metrics(self):
-        """Calculate and display key portfolio metrics."""
-        if self.portfolio.empty:
-            st.warning("No data available to calculate metrics.")
-            return
-        total_return = np.dot(self.portfolio["Allocation (%)"] / 100, self.portfolio["Return (%)"])
-        total_volatility = calculate_portfolio_volatility(
-            self.portfolio["Allocation (%)"].values / 100,
-            np.diag(self.portfolio["Volatility (%)"].values)
-        )
-        st.write("## Portfolio Metrics")
-        st.write(f"### Expected Annual Return: {total_return:.2f}%")
-        st.write(f"### Portfolio Volatility: {total_volatility:.2f}%")
-
-    def benchmark_comparison(self, benchmark_return):
-        """Compare portfolio return with a benchmark."""
-        if self.portfolio.empty:
-            st.warning("No data available to compare with a benchmark.")
-            return
-        portfolio_return = np.dot(self.portfolio["Allocation (%)"] / 100, self.portfolio["Return (%)"])
-        st.write("## Benchmark Comparison")
-        st.write(f"### Portfolio Return: {portfolio_return:.2f}%")
-        st.write(f"### Benchmark Return: {benchmark_return:.2f}%")
-        if portfolio_return > benchmark_return:
-            st.success("The portfolio is outperforming the benchmark.")
+            st.info("No assets in the portfolio. Add transactions to see your portfolio.")
         else:
-            st.error("The portfolio is underperforming compared to the benchmark.")
+            st.dataframe(self.portfolio)
+            total_value = self.portfolio["Value"].sum()
+            st.write(f"### Total Portfolio Value: ${total_value:.2f}")
 
-# Streamlit interface
+            # Pie chart for allocation
+            fig, ax = plt.subplots()
+            ax.pie(self.portfolio["Value"], labels=self.portfolio["Asset"], autopct="%1.1f%%", startangle=140)
+            ax.set_title("Portfolio Allocation")
+            st.pyplot(fig)
+
+# Streamlit Interface
 def main():
-    st.title("Advanced Portfolio Analysis Tool")
+    st.title("Stocks & Crypto Portfolio Tool")
 
-    # Initialize the tool
+    # Initialize the portfolio tool
     if "portfolio_tool" not in st.session_state:
-        st.session_state["portfolio_tool"] = PortfolioAnalysisTool()
+        st.session_state["portfolio_tool"] = PortfolioTool()
     portfolio_tool = st.session_state["portfolio_tool"]
 
-    # Sidebar for adding assets
+    # Sidebar: Add Transaction
     with st.sidebar:
-        st.header("Add Asset")
-        name = st.text_input("Asset Name")
-        asset_type = st.selectbox("Asset Type", ["Stocks", "Bonds", "Cash", "Real Estate", "Other"])
-        value = st.number_input("Value ($)", min_value=0.0, step=100.0)
-        allocation = st.number_input("Allocation (%)", min_value=0.0, max_value=100.0, step=1.0)
-        expected_return = st.number_input("Expected Return (%)", min_value=-100.0, max_value=100.0, step=0.1)
-        volatility = st.number_input("Volatility (%)", min_value=0.0, max_value=100.0, step=0.1)
+        st.header("Add Transaction")
+        asset_name = st.text_input("Asset Name (e.g., BTC, AAPL)")
+        asset_type = st.selectbox("Asset Type", ["Crypto", "Stock"])
+        date = st.date_input("Date")
+        action = st.selectbox("Action", ["Buy", "Sell"])
+        quantity = st.number_input("Quantity", min_value=0.0, step=0.1)
+        price = st.number_input("Price ($)", min_value=0.0, step=0.01)
 
-        if st.button("Add Asset"):
-            portfolio_tool.add_asset(name, asset_type, value, allocation, expected_return, volatility)
-            st.success(f"Added {name} to the portfolio.")
+        if st.button("Add Transaction"):
+            portfolio_tool.add_transaction(asset_name, asset_type, date, action, quantity, price)
+            st.success(f"Transaction for {asset_name} added!")
 
-    # Main content
-    portfolio_tool.view_portfolio()
-    portfolio_tool.plot_allocation_pie_chart()
-    portfolio_tool.calculate_portfolio_metrics()
+    # Display portfolio
+    portfolio_tool.display_portfolio()
 
-    # Benchmark comparison
-    benchmark_return = st.number_input("Benchmark Return (%)", min_value=-100.0, max_value=100.0, step=0.1)
-    if st.button("Compare with Benchmark"):
-        portfolio_tool.benchmark_comparison(benchmark_return)
+    # Display transactions
+    st.write("## Transaction History")
+    if not portfolio_tool.transactions.empty:
+        st.dataframe(portfolio_tool.transactions)
 
 if __name__ == "__main__":
     main()
